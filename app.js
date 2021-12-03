@@ -1,136 +1,121 @@
 const { Op } = require('sequelize');
-const { Collection, Client, Formatters, Intents } = require('discord.js');
+const { Collection, Client, Intents } = require('discord.js');
 const { Users, CurrencyShop, UserItems } = require('./dbObjects.js');
 const { token } = require('./config.json');
-const chance = require("chance").Chance();
+const chance = require('chance').Chance();
 
-const client = new Client({ intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES] });
+const client = new Client({
+    intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES],
+});
 const currency = new Collection();
 let itemNames = new Collection();
 let itemWeights = new Collection();
 
-Reflect.defineProperty(currency, 'add', {
-	/* eslint-disable-next-line func-name-matching */
-	value: async function add(id, amount) {
-		const user = currency.get(id);
-
-		if (user) {
-			user.balance += Number(amount);
-			return user.save();
-		}
-
-		const newUser = await Users.create({ user_id: id, balance: amount });
-		currency.set(id, newUser);
-
-		return newUser;
-	},
-});
-
 Reflect.defineProperty(currency, 'getBalance', {
-	/* eslint-disable-next-line func-name-matching */
-	value: function getBalance(id) {
-		const user = currency.get(id);
-		return user ? user.balance : 0;
-	},
+    value: function getBalance(id) {
+        const user = currency.get(id);
+        return user ? user.balance : 0;
+    },
 });
-
 
 client.once('ready', async () => {
-	const storedBalances = await Users.findAll();
-	console.log(storedBalances);
-	storedBalances.forEach(b => currency.set(b.user_id, b));
-	const items = await CurrencyShop.findAll();
-	itemNames = items.map(a => a.name);
-	itemWeights = items.map(a => a.dropRate);
+    const items = await CurrencyShop.findAll();
+    itemNames = items.map((a) => a.name);
+    itemWeights = items.map((a) => a.dropRate);
 
-	console.log(`Logged in as !`);
-	console.log(`Logged in as !`,items);
+    console.log(`Logged in as !`);
 });
 
-// client.on('messageCreate', async message => {
-// 	if (message.author.bot) return;
-// 	currency.add(message.author.id, 1);
-// });
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isCommand()) return;
 
-client.on('interactionCreate', async interaction => {
-	if (!interaction.isCommand()) return;
+    const { commandName } = interaction;
 
-	const { commandName } = interaction;
+    if (commandName === 'balance') {
+        const [user] = await Users.findOrCreate({
+            where: { user_id: interaction.user.id },
+            defaults: { balance: 0 },
+        });
 
-	if (commandName === 'balance') {
-		const target = interaction.options.getUser('user') ?? interaction.user;
-		return interaction.reply(`${target.tag} has ${currency.getBalance(target.id)}💰`);
-	} else if (commandName === 'join') {
-		const user = currency.get(interaction.user.id);
-		if(user) {
-			interaction.reply(`miner registered already`);
-		} else {
-			const newUser = await Users.create({ user_id: interaction.user.id, balance: 0 });
-			currency.set(interaction.user.id, newUser);
-			interaction.reply(`miner registered!`);
-		}
-	}
-	 else if (commandName === 'dig') {
-		const user = currency.get(interaction.user.id);
-		if(!user) {
-			interaction.reply(`please register first with /join`);
-		} else {
-			const res = chance.weighted(itemNames, itemWeights);
-			let resultString;
+        return interaction.reply(`${interaction.user.tag} has ${user.balance}💰`);
+    } else if (commandName === 'dig') {
+        const res = chance.weighted(itemNames, itemWeights);
+        let resultString;
 
-			if (res === "dirt") {
-				resultString = "" + res + "" + " 💩";
-			  } else if (res === "diamonds") {
-				resultString = "" + res + "" + " 💎";
-			  } else {
-				resultString = "" + res + "" + " 🏆";
-			  }
+        if (res === 'dirt') {
+            resultString = '' + res + '' + ' 💩';
+        } else if (res === 'diamonds') {
+            resultString = '' + res + '' + ' 💎';
+        } else {
+            resultString = '' + res + '' + ' 🏆';
+        }
 
+        interaction.reply("You've uncovered some.... " + resultString);
 
-			interaction.reply("You've uncovered some.... " + resultString);
+        const item = await CurrencyShop.findOne({
+            where: { name: { [Op.like]: res } },
+        });
 
-			const item = await CurrencyShop.findOne({ where: { name: { [Op.like]: res } } });
-			
-			const user = await Users.findOne({ where: { user_id: interaction.user.id } });
-			await user.addItem(item);
-		}
-	} else if (commandName === 'inventory') {
-		const target = interaction.options.getUser('user') ?? interaction.user;
-		const user = await Users.findOne({ where: { user_id: target.id } });
-		const items = await user.getItems();
+        const [user] = await Users.findOrCreate({
+            where: { user_id: interaction.user.id },
+            defaults: { balance: 0 },
+        });
+        await user.addItem(item);
+    } else if (commandName === 'inventory') {
+        const [user] = await Users.findOrCreate({
+            where: { user_id: interaction.user.id },
+            defaults: { balance: 0 },
+        });
 
-		if (!items.length) return interaction.reply(`${target.tag} has nothing!`);
+        const items = await user.getItems();
 
-		interaction.reply(`${target.tag} currently has ${items.map(i => `${i.amount} ${i.item.name} ${i.item.emoji}`).join(', ')}`);
-	} 
-	else if (commandName === 'sell') {
-		const target = interaction.options.getUser('user') ?? interaction.user;
-		const transferAmount = interaction.options.getInteger('amount');
-		const itemName = interaction.options.getString('category');
-		const item = await CurrencyShop.findOne({ where: { name: { [Op.like]: itemName } } });
-			
-		if (!item) return interaction.reply(`That item doesn't exist.`);
+        if (!items.length) return interaction.reply(`${interaction.user.tag} has nothing!`);
 
-		const userItem = await UserItems.findOne({
-			where: { user_id: interaction.user.id, item_id: item.id },
-		});
+        interaction.reply(
+            `${interaction.user.tag} currently has ${items
+                .map((i) => `${i.amount} ${i.item.name} ${i.item.emoji}`)
+                .join(', ')}`
+        );
+    } else if (commandName === 'sell') {
+        const [user, created] = await Users.findOrCreate({
+            where: { user_id: interaction.user.id },
+            defaults: { balance: 0 },
+        });
 
-		if (userItem.amount < transferAmount) {
-			return interaction.reply(`Need more dirt`);
-		}
+        if (created) {
+            return interaction.reply(`Got nothing to sell yet, try digging a couple... **/dig**`);
+        }
 
-		const user = await Users.findOne({ where: { user_id: target.id } });
+        const transferAmount = interaction.options.getInteger('amount');
+        const itemName = interaction.options.getString('category');
 
-		const totalValue = item.cost * transferAmount;
+        const item = await CurrencyShop.findOne({
+            where: { name: { [Op.like]: itemName } },
+        });
 
-		currency.add(interaction.user.id, totalValue);
+        if (!item) return interaction.reply(`That item doesn't exist.`);
 
+        const userItem = await UserItems.findOne({
+            where: { user_id: interaction.user.id, item_id: item.id },
+        });
 
-		await user.sellItem(item, transferAmount);
+        if (!userItem) {
+            return interaction.reply(`Need more ${itemName}, try digging a bit **/dig**`);
+        } else {
+            if (userItem.amount < transferAmount) {
+                return interaction.reply(`Need more ${itemName}, try digging a bit **/dig**`);
+            }
+        }
 
-		return interaction.reply(`You've sold: ${transferAmount} ${item.name}.`);
+        const totalValue = item.cost * transferAmount;
 
-	} 
+        user.balance += transferAmount;
+        user.save();
+
+        await user.sellItem(item, totalValue);
+
+        return interaction.reply(`You've sold: ${transferAmount} ${item.name}.`);
+    }
 });
 
 client.login(token);
